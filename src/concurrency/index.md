@@ -1,26 +1,26 @@
-# Concurrency
+# Конкурентность
 
-Concurrency happens whenever different parts of your program might execute
-at different times or out of order. In an embedded context, this includes:
+Конкурентность возникает когда разные части вашей программы запускаются в разное
+время или в разном порядке. В эмбеддед контексте она включает:
 
-* interrupt handlers, which run whenever the associated interrupt happens,
-* various forms of multithreading, where your microprocessor regularly swaps
-  between parts of your program,
-* and in some systems, multiple-core microprocessors, where each core can be
-  independently running a different part of your program at the same time.
+* обработчики прерываний, которые запускаются в любой момент, когда происходит прерывание,
+* различные формы многопоточности, когда ваш микропроцессор регулярно переключается
+  между частями программы,
+* и в некоторых системах с многоядерными микропроцессорами, когда каждое ядро может
+  независимо запускаю разные части ваше программы одновременно.
 
-Since many embedded programs need to deal with interrupts, concurrency will
-usually come up sooner or later, and it's also where many subtle and difficult
-bugs can occur. Luckily, Rust provides a number of abstractions and safety
-guarantees to help us write correct code.
+Так как многие программы для встраиваемых систем должны работать с прерываниями, конкурентность
+рано или позно возникнет, и здесь могут появиться множество трудноуловимых ошибок.
+К счастью, Rust предоставляет ряд абстракций и гарантий безопасности, чтобы помочь
+нам писать корректный код.
 
-## No Concurrency
+## Когда нет конкуренции
 
-The simplest concurrency for an embedded program is no concurrency: your
-software consists of a single main loop which just keeps running, and there
-are no interrupts at all. Sometimes this is perfectly suited to the problem
-at hand! Typically your loop will read some inputs, perform some processing,
-and write some outputs.
+Простейшая форма конкурентности в эмбеддед программах - это когда нет конкуренции:
+ваш программный код состоит из одного главного цикла, который просто продолжает выполняться,
+и прерывания отсутствуют вовсе. Иногда это идеально подходит для решения проблемы!
+Обычно  таких случаях ваш цикл будет читать некоторые входные данные,
+выполнять некоторую обработку и записывать некоторые выходные данные.
 
 ```rust,ignore
 #[entry]
@@ -34,29 +34,30 @@ fn main() {
 }
 ```
 
-Since there's no concurrency, there's no need to worry about sharing data
-between parts of your program or synchronising access to peripherals. If
-you can get away with such a simple approach this can be a great solution.
+Так как конкуренции нет, то нет нужды беспокоиться о распределении данных
+между частями вашей программы или синхронизировать доступ к периферии.
+Если вы можете обойтись таким простым подходом, это может стать отличным решением.
 
-## Global Mutable Data
+## Глобальные изменяемые данные
 
-Unlike non-embedded Rust, we will not usually have the luxury of creating
-heap allocations and passing references to that data into a newly-created
-thread. Instead our interrupt handlers might be called at any time and must
-know how to access whatever shared memory we are using. At the lowest level,
-this means we must have _statically allocated_ mutable memory, which
-both the interrupt handler and the main code can refer to.
+В отличие от неэмбеддед Rust'а, у нас обычно не будет такой роскоши, как аллокации данных в куче
+и передача ссылок на эти данные во вновь созданный поток.
+Вместо этого наши обработчики прерываний могут быть вызваны в любое время и
+должны значть, как получить доступ к любой разделяемой памяти, которую мы используем.
+На самом нижнем уровне это значит, что мы должны иметь
+_статически аллоцированную_ изменяемую память, к которой могут обращаться
+как обработчик прерывания, так и главный код программы.
 
-In Rust, such [`static mut`] variables are always unsafe to read or write,
-because without taking special care, you might trigger a race condition,
-where your access to the variable is interrupted halfway through by an
-interrupt which also accesses that variable.
+В Rust, такие [`static mut`] переменные всегда небезопасны для чтения или записи,
+потому что без специальных мер предосторожности, Вы можете вызвать состояние гонки данных,
+когда Ваше обращение к переменной прерывается на полпути
+прерыванием, которое также обращается к этой переменной.
 
 [`static mut`]: https://doc.rust-lang.org/book/ch19-01-unsafe-rust.html#accessing-or-modifying-a-mutable-static-variable
 
-For an example of how this behaviour can cause subtle errors in your code,
-consider an embedded program which counts rising edges of some input signal
-in each one-second period (a frequency counter):
+Для примера как такое поведение может вызвать трудноуловимые ошибки в коде,
+рассмотрим эмбеддед программу, которая считает передные фронты входных сигналов
+в каждом односекундном периоде (счетчик частоты):
 
 ```rust,ignore
 static mut COUNTER: u32 = 0;
@@ -68,7 +69,7 @@ fn main() -> ! {
     loop {
         let state = read_signal_level();
         if state && !last_state {
-            // DANGER - Not actually safe! Could cause data races.
+            // ОПАСНОСТЬ - На самом деле не безопасно! Может вызвать гонку данных.
             unsafe { COUNTER += 1 };
         }
         last_state = state;
@@ -81,23 +82,24 @@ fn timer() {
 }
 ```
 
-Each second, the timer interrupt sets the counter back to 0. Meanwhile, the
-main loop continually measures the signal, and incremements the counter when
-it sees a change from low to high. We've had to use `unsafe` to access
-`COUNTER`, as it's `static mut`, and that means we're promising the compiler
-we won't cause any undefined behaviour. Can you spot the race condition? The
-increment on `COUNTER` is _not_ guaranteed to be atomic — in fact, on most
-embedded platforms, it will be split into a load, then the increment, then
-a store. If the interrupt fired after the load but before the store, the
-reset back to 0 would be ignored after the interrupt returns — and we would
-count twice as many transitions for that period.
+Каждую секунду прерывание таймера сбрасывает счетчик. В тоже время
+главный цикл постоянно измеряет сигнал, и увеличивает счетчик, когда видит
+сигнал перешел из низкого состояния в высокое. Нам нужно использовать `unsafe`,
+чтобы получить доступ к `COUNTER`, так как он `static mut`, а это значит, что
+мы обещаем компилятору, что не вызовем неопределенное поведение. Можете
+ли Вы обнаружить гонку данных? Инкремент `COUNTER`'a _не_ гарантирует атомарность —
+на самом деле в большинстве встраиваемых платформ, он будет разделен
+на загрузку, собственно инкремент и сохранение данных.
+Если прерывание произойдет после загрузки, но до сохранения, сброс в 0
+будет проигнорирован по завершению прерывания — и мы насчитаем вдвое
+больше модуляций за период.
 
-## Critical Sections
+## Критические секции
 
-So, what can we do about data races? A simple approach is to use _critical
-sections_, a context where interrupts are disabled. By wrapping the access to
-`COUNTER` in `main` in a critical section, we can be sure the timer interrupt
-will not fire until we're finished incrementing `COUNTER`:
+Так что мы можем сделать с гонками данных? Простой метод - это использовать
+_критические секции_, контекст, в котором прерывания отключены. Оборачивая доступ к
+`COUNTER` в `main` в критическую секцию, мы можем убедить прерывание таймера
+не запускаться, пока мы не закончим операцию преращения `COUNTER`:
 
 ```rust,ignore
 static mut COUNTER: u32 = 0;
@@ -109,7 +111,7 @@ fn main() -> ! {
     loop {
         let state = read_signal_level();
         if state && !last_state {
-            // New critical section ensures synchronised access to COUNTER
+            // Новая критическая секция проверят синхронизацию доступа к COUNTER
             cortex_m::interrupt::free(|_| {
                 unsafe { COUNTER += 1 };
             });
@@ -124,41 +126,37 @@ fn timer() {
 }
 ```
 
-In this example we use `cortex_m::interrupt::free`, but other platforms will
-have similar mechanisms for executing code in a critical section. This is also
-the same as disabling interrupts, running some code, and then re-enabling
-interrupts.
+В этом примере мы используем `cortex_m::interrupt::free`, но на другие платформы
+будут иметь похожие механизмы для выполнения кода в критической секции.
+Они также отключают прерывания, запускают какой-то код, а затем перезапускают прерывания.
 
-Note we didn't need to put a critical section inside the timer interrupt,
-for two reasons:
+Заметьте, что нам не нужно вставлять критическую секцию внутрь прерывания таймера
+по двум причинам:
 
-  * Writing 0 to `COUNTER` can't be affected by a race since we don't read it
-  * It will never be interrupted by the `main` thread anyway
+  * На запись 0 в `COUNTER` не влияет гонка, так как мы его не читаем
+  * Прерывание никогда не будет прервано потоком `main`
 
-If `COUNTER` was being shared by multiple interrupt handlers that might
-_preempt_ each other, then each one might require a critical section as well.
+Если `COUNTER` было разделено множеством обработчиков, которые могут
+_вытеснять_ друг друга, тогда каждый из них также может требовать наличие критической секции.
 
-This solves our immediate problem, but we're still left writing a lot of
-`unsafe` code which we need to carefully reason about, and we might be using
-critical sections needlessly — which comes at a cost to overhead and interrupt
-latency and jitter.
+Это решило нашу первоочередную проблему, но мы всё ещё пишет много
+`unsafe` кода, о котором нужно заботиться, и мы можем использовать критические секции
+без необходимости - что обходится слишком дорого, задерживая прерывания и вызывая дребезг.
 
-It's worth noting that while a critical section guarantees no interrupts will
-fire, it does not provide an exclusivity guarantee on multi-core systems!  The
-other core could be happily accessing the same memory as your core, even
-without interrupts. You will need stronger synchronisation primitives if you
-are using multiple cores.
+Стоит отметить, что хотя критическая секция гарантирует, что прерывания не запустится,
+она не дает гарантий эксклюзивности для многоядерных систем! Другое ядро может без проблем
+получить доступ к той же памяти, что и ваше ядро, даже без прерываний.
+Вам понадобятся более мощные примитивы синхронизации, когда вы используете несколько ядер.
 
-## Atomic Access
+## Атомарный доступ
 
-On some platforms, atomic instructions are available, which provide guarantees
-about read-modify-write operations. Specifically for Cortex-M, `thumbv6`
-(Cortex-M0) does not provide atomic instructions, while `thumbv7` (Cortex-M3
-and above) do. These instructions give an alternative to the heavy-handed
-disabling of all interrupts: we can attempt the increment, it will succeed most
-of the time, but if it was interrupted it will automatically retry the entire
-increment operation. These atomic operations are safe even across multiple
-cores.
+На некоторых платформах доступны атомарные инструкции, которые предоставляют
+гарантии касательно операций чтения-изменения-записи.
+Что касается Cortex-M, `thumbv6` (Cortex-M0) не предоставляет атомарных инструкций,
+в то время как `thumbv7` (Cortex-M3 и выше) предоставляет. Эти инструкции дают
+альтернативу тяжеловесному отключению всех прерываний: когда мы будем делать инкремент,
+чаще всего он будет успешным, но если он будет прерван, то автоматически повторит всю
+операцию приращения. Атомарные операции безопасны даже для многоядерных систем.
 
 ```rust,ignore
 use core::sync::atomic::{AtomicUsize, Ordering};
@@ -172,7 +170,7 @@ fn main() -> ! {
     loop {
         let state = read_signal_level();
         if state && !last_state {
-            // Use `fetch_add` to atomically add 1 to COUNTER
+            // Используем `fetch_add`, чтобы атомарно добавить 1 к COUNTER
             COUNTER.fetch_add(1, Ordering::Relaxed);
         }
         last_state = state;
@@ -181,57 +179,58 @@ fn main() -> ! {
 
 #[interrupt]
 fn timer() {
-    // Use `store` to write 0 directly to COUNTER
+    // Используем `store`, чтобы записать 0 напрямую в COUNTER
     COUNTER.store(0, Ordering::Relaxed)
 }
 ```
 
-This time `COUNTER` is a safe `static` variable. Thanks to the `AtomicUsize`
-type `COUNTER` can be safely modified from both the interrupt handler and the
-main thread without disabling interrupts. When possible, this is a better
-solution — but it may not be supported on your platform.
+Теперь `COUNTER` - безопасная `static` переменная. Благодаря типу `AtomicUsize`
+`COUNTER` можно безопасно изменять как из обработчика прерывания,
+так и главного потока программы без отключения прерываний.
+Когда это возможно — это лучшее решение, но оно может не поддерживаться Вашей платформой.
 
-A note on [`Ordering`]: this affects how the compiler and hardware may reorder
-instructions, and also has consequences on cache visibility. Assuming that the
-target is a single core platform `Relaxed` is sufficient and the most efficient
-choice in this particular case. Stricter ordering will cause the compiler to
-emit memory barriers around the atomic operations; depending on what you're
-using atomics for you may or may not need this! The precise details of the
-atomic model are complicated and best described elsewhere.
+Примечание к [`Ordering`]: данный тип влият на то как, компилятор и оборудование
+могут переупорядочивает инструкции, а также влияет на видимость кэша.
+Предполагая, что целью является одноядерная платформа, `Relaxed` - достаточный
+и наиболее эффективный выбор в этом конкретном случае.
+Более строгое упорядочивание приведет к тому, что компилятор создаст барьеры памяти
+вокруг атомарных операций; в зависимости от того, для чего вы используете атомные
+инструкции, для вас может это может понадобиться, а может и нет!
+Подробности атомарной модели сложны и лучше описаны в других местах.
 
-For more details on atomics and ordering, see the [nomicon].
+Для подробностей по атомарным операциям и упорядочиванию, смотрите [nomicon].
 
 [`Ordering`]: https://doc.rust-lang.org/core/sync/atomic/enum.Ordering.html
 [nomicon]: https://doc.rust-lang.org/nomicon/atomics.html
 
 
-## Abstractions, Send, and Sync
+## Абстракции, Send, и Sync
 
-None of the above solutions are especially satisfactory. They require `unsafe`
-blocks which must be very carefully checked and are not ergonomic. Surely we
-can do better in Rust!
+Ни одно из вышеуказанных решений не является особенно удовлетворительным.
+Они требуют `unsafe` блоки, которые нужно очень внимательно проверять и неприятно выглядят.
+Конечно же мы можем делать это в Rust лучше!
 
-We can abstract our counter into a safe interface which can be safely used
-anywhere else in our code. For this example we'll use the critical-section
-counter, but you could do something very similar with atomics.
+Мы можем абстрагировать наш счетчик в безопасный интерфейс, который можно безопасно
+использовать в любом месте кода. В этом примере мы будем использовать счетчик с
+критической секцией, но Вы можете сделать что-то похожее с атомарными операциями.
 
 ```rust,ignore
 use core::cell::UnsafeCell;
 use cortex_m::interrupt;
 
-// Our counter is just a wrapper around UnsafeCell<u32>, which is the heart
-// of interior mutability in Rust. By using interior mutability, we can have
-// COUNTER be `static` instead of `static mut`, but still able to mutate
-// its counter value.
+// Наш счетчик - просто обертка вокруг UnsafeCell<u32>, который сердце
+// interior mutability в Rust. Используя interior mutability, мы можем сделать
+// COUNTER `static` вместо `static mut`, но при этом всё ещё иметь возможность
+// изменять значение счетчика.
 struct CSCounter(UnsafeCell<u32>);
 
 const CS_COUNTER_INIT: CSCounter = CSCounter(UnsafeCell::new(0));
 
 impl CSCounter {
     pub fn reset(&self, _cs: &interrupt::CriticalSection) {
-        // By requiring a CriticalSection be passed in, we know we must
-        // be operating inside a CriticalSection, and so can confidently
-        // use this unsafe block (required to call UnsafeCell::get).
+        // Требуя передачи CriticalSection в качестве аргумента, мы убеждаемся,
+        // что будем работать внутри критической секции, и поэтому можем спокойно
+        // использовать unsafe блок (требуемый для вызова UnsafeCell::get).
         unsafe { *self.0.get() = 0 };
     }
 
@@ -240,11 +239,11 @@ impl CSCounter {
     }
 }
 
-// Required to allow static CSCounter. See explanation below.
+// Нужно для static CSCounter. Смотреть объяснение ниже.
 unsafe impl Sync for CSCounter {}
 
-// COUNTER is no longer `mut` as it uses interior mutability;
-// therefore it also no longer requires unsafe blocks to access.
+// COUNTER больше не `mut`, так как использует interior mutability;
+// тем не менее он таже больше не требует unsafe блоков для доступа.
 static COUNTER: CSCounter = CS_COUNTER_INIT;
 
 #[entry]
@@ -254,7 +253,7 @@ fn main() -> ! {
     loop {
         let state = read_signal_level();
         if state && !last_state {
-            // No unsafe here!
+            // Здесь нет unsafe!
             interrupt::free(|cs| COUNTER.increment(cs));
         }
         last_state = state;
@@ -263,23 +262,23 @@ fn main() -> ! {
 
 #[interrupt]
 fn timer() {
-    // We do need to enter a critical section here just to obtain a valid
-    // cs token, even though we know no other interrupt could pre-empt
-    // this one.
+    // Нам нужно войти здесь в критическую секцию, только чтобы получить валидный
+    // символ cs, даже если знаем, что никакие другие прерывания 
+    //  не могут вытеснить текущее.
     interrupt::free(|cs| COUNTER.reset(cs));
 
-    // We could use unsafe code to generate a fake CriticalSection if we
-    // really wanted to, avoiding the overhead:
+    // Мы можем использовать unsafe код, чтобы сгенерировать искусственную CriticalSection,
+    // если нам это действительно требуется, чтобы избежать накладных расходов:
     // let cs = unsafe { interrupt::CriticalSection::new() };
 }
 ```
 
-We've moved our `unsafe` code to inside our carefully-planned abstraction,
-and now our appplication code does not contain any `unsafe` blocks.
+Мы переместилт наш `unsafe` код внутрь нашей бережно спланированной абстракции,
+и теперь код нашего приложения не содержит `unsafe` блоков.
 
-This design requires the application pass a `CriticalSection` token in:
-these tokens are only safely generated by `interrupt::free`, so by requiring
-one be passed in, we ensure we are operating inside a critical section, without
+Такой дизайн требует, чтобы приложение передавало символ `CriticalSection`:
+эти символы безопасно создаются только с помощью `interrupt::free`, поэтому требуя
+передачи такого символа, мы убеждаемся, что работаем в критической секции, without
 having to actually do the lock ourselves. This guarantee is provided statically
 by the compiler: there won't be any runtime overhead associated with `cs`.
 If we had multiple counters, they could all be given the same `cs`, without
@@ -512,7 +511,67 @@ Since we can't move the `GPIOA` out of the `&Option`, we need to convert it to
 an `&Option<&GPIOA>` with `as_ref()`, which we can finally `unwrap()` to obtain
 the `&GPIOA` which lets us modify the peripheral.
 
-Whew! This is safe, but it is also a little unwieldy. Is there anything else
+If we need a mutable references to shared resources, then `borrow_mut` and `deref_mut`
+should be used instead. The following code shows an example using the TIM2 timer.
+
+```rust,ignore
+use core::cell::RefCell;
+use core::ops::DerefMut;
+use cortex_m::interrupt::{self, Mutex};
+use cortex_m::asm::wfi;
+use stm32f4::stm32f405;
+
+static G_TIM: Mutex<RefCell<Option<Timer<stm32::TIM2>>>> =
+	Mutex::new(RefCell::new(None));
+
+#[entry]
+fn main() -> ! {
+    let mut cp = cm::Peripherals::take().unwrap();
+    let dp = stm32f405::Peripherals::take().unwrap();
+
+    // Some sort of timer configuration function.
+    // Assume it configures the TIM2 timer, its NVIC interrupt,
+    // and finally starts the timer.
+    let tim = configure_timer_interrupt(&mut cp, dp);
+
+    interrupt::free(|cs| {
+        G_TIM.borrow(cs).replace(Some(tim));
+    });
+
+    loop {
+        wfi();
+    }
+}
+
+#[interrupt]
+fn timer() {
+    interrupt::free(|cs| {
+        if let Some(ref mut tim)) =  G_TIM.borrow(cs).borrow_mut().deref_mut() {
+            tim.start(1.hz());
+        }
+    });
+}
+
+```
+
+> **NOTE**
+>
+> At the moment, the `cortex-m` crate hides const versions of some functions
+> (including `Mutex::new()`) behind the `const-fn` feature. So you need to add
+> the `const-fn` feature as a dependency for cortex-m in the Cargo.toml to make
+> the above examples work:
+>
+> ``` toml
+> [dependencies.cortex-m]
+> version="0.6.0"
+> features=["const-fn"]
+> ```
+> Meanwhile, `const-fn` has been working on stable Rust for some time now.
+> So this additional switch in Cargo.toml will not be needed as soon as 
+> it is enabled in `cortex-m` by default.
+>
+
+Фух! This is safe, but it is also a little unwieldy. Is there anything else
 we can do?
 
 ## RTFM
@@ -527,11 +586,11 @@ as guaranteeing no deadlocks and giving extremely low time and memory overhead.
 [RTFM framework]: https://github.com/japaric/cortex-m-rtfm
 
 The framework also includes other features like message passing, which reduces
-the need for explicit shared state, and the ability to schedule tasks to run at
+the need for explicit http://baibako.tv/index.php?page=1shared state, and the ability to schedule tasks to run at
 a given time, which can be used to implement periodic tasks. Check out [the
 documentation] for more information!
 
-[the documentation]: https://japaric.github.io/cortex-m-rtfm/book/
+[the documentation]: https://japaric.github.io/cortex-m-rtfm/book/ru/
 
 ## Real Time Operating Systems
 

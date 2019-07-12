@@ -37,7 +37,7 @@ more information and coordination
     - [Соглашения по проектированию](./static-guarantees/design-contracts.md)
     - [Абстракции нулевой стоимости](./static-guarantees/zero-cost-abstractions.md)
 - [Переносимость](./portability/index.md)
-- [Параллелизм](./concurrency/index.md)
+- [Конкурентность](./concurrency/index.md)
 - [Коллекции](./collections/index.md)
 - [Советы для embedded C разработчиков](./c-tips/index.md)
     <!-- TODO: Define Sections -->
