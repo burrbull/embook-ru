@@ -278,66 +278,68 @@ fn timer() {
 
 Такой дизайн требует, чтобы приложение передавало символ `CriticalSection`:
 эти символы безопасно создаются только с помощью `interrupt::free`, поэтому требуя
-передачи такого символа, мы убеждаемся, что работаем в критической секции, without
-having to actually do the lock ourselves. This guarantee is provided statically
-by the compiler: there won't be any runtime overhead associated with `cs`.
-If we had multiple counters, they could all be given the same `cs`, without
-requiring multiple nested critical sections.
+передачи такого символа, мы убеждаемся, что работаем в критической секции,
+при этом на самом деле не производя замыкания. Эта гарантия предоставляется
+компилятором статически: в рантайме не будет накладных расходов, связанных с `cs`.
+Если у нас есть несколько счетчиков, они все могут передаваться подобно `cs`,
+не требуя множества вложенных критических секций.
 
-This also brings up an important topic for concurrency in Rust: the
-[`Send` and `Sync`] traits. To summarise the Rust book, a type is Send
-when it can safely be moved to another thread, while it is Sync when
-it can be safely shared between multiple threads. In an embedded context,
-we consider interrupts to be executing in a separate thread to the application
-code, so variables accessed by both an interrupt and the main code must be
-Sync.
+Это также поднимает важную тему для конкурентности в Rust: трейты
+[`Send` и `Sync`][SendSync]. Суммируя описанное в книге Rust, тип Send -
+это когда можно безопасно перемещать объект в другой поток, в то время как Sync - это
+когда можно безопасно передавать ссылку между потоками. В контексте встраиваемых систем,
+мы рассматриваем прерывания, будто они выполняются в отдельном потоке относительно кода приложения,
+поэтому переменные, к которым получают доступ как прерывание так и основной код,
+должны быть Sync.
 
-[`Send` and `Sync`]: https://doc.rust-lang.org/nomicon/send-and-sync.html
+[SendSync]: https://doc.rust-lang.org/nomicon/send-and-sync.html
 
-For most types in Rust, both of these traits are automatically derived for you
-by the compiler. However, because `CSCounter` contains an [`UnsafeCell`], it is
-not Sync, and therefore we could not make a `static CSCounter`: `static`
-variables _must_ be Sync, since they can be accessed by multiple threads.
+Для большинства типов Rust, оба этих трейта автоматически выводятся компилятором.
+Однако из-за того, что `CSCounter` содержит [`UnsafeCell`], он не Sync,
+и поэтому мы не можем создать `static CSCounter`: `static` переменные
+_должны_ быть Sync, потому что к ним можно получить доступ из множества потоков.
 
 [`UnsafeCell`]: https://doc.rust-lang.org/core/cell/struct.UnsafeCell.html
 
-To tell the compiler we have taken care that the `CSCounter` is in fact safe
-to share between threads, we implement the Sync trait explicitly. As with the
-previous use of critical sections, this is only safe on single-core platforms:
-with multiple cores you would need to go to greater lengths to ensure safety.
+Чтобы сказать компилятору, что мы позаботились, чтобы `CSCounter` можно было
+безопасно передавать между потоками, мы реализуем трейт Sync явно.
+Как и предыдущие, такое использование критических секций безопасно только
+на одноядерных платформах: с несколькими ядрами вам прийдется нырнуть глубже,
+чтобы обеспечить безопасность.
 
-## Mutexes
+## Mьютексы
 
-We've created a useful abstraction specific to our counter problem, but
-there are many common abstractions used for concurrency.
+Мы создалы полезную абстракцию, специфичную для проблемы счетчик, но есть
+много абстракций общего назначения, используемые для конкурентности.
 
-One such _synchronisation primitive_ is a mutex, short for mutual exclusion.
-These constructs ensure exclusive access to a variable, such as our counter. A
-thread can attempt to _lock_ (or _acquire_) the mutex, and either succeeds
-immediately, or blocks waiting for the lock to be acquired, or returns an error
-that the mutex could not be locked. While that thread holds the lock, it is
-granted access to the protected data. When the thread is done, it _unlocks_ (or
-_releases_) the mutex, allowing another thread to lock it. In Rust, we would
-usually implement the unlock using the [`Drop`] trait to ensure it is always
-released when the mutex goes out of scope.
+Один из таких _примитивов синхронизации_ - это мьютекс, сокращение от
+mutual exclusion (взаимное исключение).
+Эти конструкции обеспечивают эксклюзивныц доступ к переменной, такой как наш счетчик.
+Поток может попытаться _замкнуть_ (или _захватить_) мьютекс, и либо сообщить об успехе
+сразу, или заблокироваться, ожидая когда замыкание будет захвачено, либо вернуть ошибку,
+означающую, что мьютекс не может быть захвачен. Пока поток удерживает замыкание,
+ему предоставлен доступ к защищаемым данным. Когда поток завершается, он _размыкает_ (или
+_освобождает_) мьютекс, позволяя другому потоку его замкнуть. В Rust, мы бы
+обычно реализовали размыкание, используя трейт [`Drop`], чтобы убедиться, что
+мьютекс всегда освобождается, когда выходит из области видимости.
 
 [`Drop`]: https://doc.rust-lang.org/core/ops/trait.Drop.html
 
-Using a mutex with interrupt handlers can be tricky: it is not normally
-acceptable for the interrupt handler to block, and it would be especially
-disastrous for it to block waiting for the main thread to release a lock,
-since we would then _deadlock_ (the main thread will never release the lock
-because execution stays in the interrupt handler). Deadlocking is not
-considered unsafe: it is possible even in safe Rust.
+Использование мьютекса с обработчиками прерываний может быть сложным:
+обычно неприемлемо блокировать обработчик прерывания, и было бы особо
+губительно блокировать его, ожидая, когда главный поток освободит замыкание,
+так как в этом случае мы получим _deadlock_ (главный поток никогда не освободит
+замыкание, потому что выполнение остается в обработчике прерывания).
+Deadlocking не считается небезопасным: он возможен даже в безопасном Rust.
 
-To avoid this behaviour entirely, we could implement a mutex which requires
-a critical section to lock, just like our counter example. So long as the
-critical section must last as long as the lock, we can be sure we have
-exclusive access to the wrapped variable without even needing to track
-the lock/unlock state of the mutex.
+Чтобы полностью избежать такого поведения, мы могли бы реализовать мьютекс,
+который требует критическую секцию, чтобы замкнться, точно как в
+нашем примере со счетчиком. Пока критическая секция длится столько же,
+сколько и блокировка, мы может быть уверены, что имеем эксклюзивный доступ
+к обернутой переменной даже не отслеживая состояние мьютекса.
 
-This is in fact done for us in the `cortex_m` crate! We could have written
-our counter using it:
+На самом деле это уже сделано для нас в крейте `cortex_m`!
+Мы бы могли переписать наш счетчик с его использованием:
 
 ```rust,ignore
 use core::cell::Cell;
@@ -361,53 +363,56 @@ fn main() -> ! {
 
 #[interrupt]
 fn timer() {
-    // We still need to enter a critical section here to satisfy the Mutex.
+    // Нам всё ещё нужно входить в критическую секцию, чтобы проверить Mutex.
     interrupt::free(|cs| COUNTER.borrow(cs).set(0));
 }
 ```
 
-We're now using [`Cell`], which along with its sibling `RefCell` is used to
-provide safe interior mutability. We've already seen `UnsafeCell` which is
-the bottom layer of interior mutability in Rust: it allows you to obtain
-multiple mutable references to its value, but only with unsafe code. A `Cell`
-is like an `UnsafeCell` but it provides a safe interface: it only permits
-taking a copy of the current value or replacing it, not taking a reference,
-and since it is not Sync, it cannot be shared between threads. These
-constraints mean it's safe to use, but we couldn't use it directly in a
-`static` variable as a `static` must be Sync.
+Теперь мы используем  [`Cell`], который вместе со своим братом `RefCell`
+используется, чтобы обеспечить безопасную interior mutability.
+Мы уже встречались с `UnsafeCell`, который представляет
+низкий уровень interior mutability в Rust: он позволяет получить множество
+изменяемых ссылок на значение, но только в небезопасном коде. `Cell` - это
+как `UnsafeCell`, но предоставляющий безопасный интерфейс: он позволяет только
+брать копию текущего значения или заменять его, но не брать ссылку,
+поэтому он не Sync и не может передаваться между потоками. Это ограничение
+значит, что использовать его безопасно, но мы не может использовать его напрямую в
+`static` переменнной, т.к. `static` должна быть Sync.
 
 [`Cell`]: https://doc.rust-lang.org/core/cell/struct.Cell.html
 
-So why does the example above work? The `Mutex<T>` implements Sync for any
-`T` which is Send — such as a `Cell`. It can do this safely because it only
-gives access to its contents during a critical section. We're therefore able
-to get a safe counter with no unsafe code at all!
+Так почему пример выше работает? `Mutex<T>` реализует Sync для любого
+`T`, который Send — такого как `Cell`. Он может делать это безопасно,
+потому что дает доступ к содержимому только во время критической секции.
+Поэтому мы можем получить безопасный счетчик, полностью избавившись от
+небезопасного кода!
 
-This is great for simple types like the `u32` of our counter, but what about
-more complex types which are not Copy? An extremely common example in an
-embedded context is a peripheral struct, which generally are not Copy.
-For that we can turn to `RefCell`.
+Это великолепно для простых типов, таких как `u32` у нашего счетчика,
+но что насчет более сложных типов, которые не Copy?
+Чрезвычайно распространенным примером в эмбеддед контексте является структура
+периферии, которая обычно не Copy.
+ля этого мы можем обратиться к `RefCell`.
 
-## Sharing Peripherals
+## Разделяемые периферийные устройства
 
-Device crates generated using `svd2rust` and similar abstractions provide
-safe access to peripherals by enforcing that only one instance of the
-peripheral struct can exist at a time. This ensures safety, but makes it
-difficult to access a peripheral from both the main thread and an interrupt
-handler.
+Крейты устройств, сгенерированные с помощью `svd2rust` и подобные им абстракции
+предоставляют безопасный доступ к периферии, проверяя, что одновременно
+может существовать только один экземпляр структуры периферии. Это обеспечивает
+безопасность, но делает сложным доступ к периферии как из основного потока,
+так и обработчика прерывания.
 
-To safely share peripheral access, we can use the `Mutex` we saw before. We'll
-also need to use [`RefCell`], which uses a runtime check to ensure only one
-reference to a peripheral is given out at a time. This has more overhead than
-the plain `Cell`, but since we are giving out references rather than copies,
-we must be sure only one exists at a time.
+Чтобы безопасно разделить доступ к периферии, мы можем использовать `Mutex`,
+который видели рашьше. Нам также нужен будет [`RefCell`], который использует рантайм,
+чтобы проверить, что ссылка на периферию одна в каждый момент времени.
+Он требует больше накладных расходов, чем простой `Cell`,
+но так как мы передаем ссылки, а не копии, то должны убедиться, что существет только одна.
 
 [`RefCell`]: https://doc.rust-lang.org/core/cell/struct.RefCell.html
 
-Finally, we'll also have to account for somehow moving the peripheral into
-the shared variable after it has been initialised in the main code. To do
-this we can use the `Option` type, initialised to `None` and later set to
-the instance of the peripheral.
+Наконец, мы должны определить, как  передать периферию в разделяемую переменную
+после того, как она была инициализирована в главном коде. Для этого мы можем использовать
+тип `Option`, инициализируемый ничем (`None`), а позже поместить в него
+экземпляр периферии.
 
 ```rust,ignore
 use core::cell::RefCell;
@@ -419,35 +424,35 @@ static MY_GPIO: Mutex<RefCell<Option<stm32f405::GPIOA>>> =
 
 #[entry]
 fn main() -> ! {
-    // Obtain the peripheral singletons and configure it.
-    // This example is from an svd2rust-generated crate, but
-    // most embedded device crates will be similar.
+    // Получить одиночку периферии и настроить её.
+    // Этот пример из крейта, сгенерированного svd2rust, но
+    // большинство крейтов встраиваемых устройств будут похожими.
     let dp = stm32f405::Peripherals::take().unwrap();
     let gpioa = &dp.GPIOA;
 
-    // Some sort of configuration function.
-    // Assume it sets PA0 to an input and PA1 to an output.
+    // Какая-то функция настройки.
+    // Предположим она устанавливает PA0 на вход, а PA1 на выход.
     configure_gpio(gpioa);
 
-    // Store the GPIOA in the mutex, moving it.
+    // Поместить GPIOA в мьютекс, передать его.
     interrupt::free(|cs| MY_GPIO.borrow(cs).replace(Some(dp.GPIOA)));
-    // We can no longer use `gpioa` or `dp.GPIOA`, and instead have to
-    // access it via the mutex.
+    // Больше мы не можем использовать `gpioa` или `dp.GPIOA`,а вместо этого должны
+    // получать доступ через мьютекс.
 
-    // Be careful to enable the interrupt only after setting MY_GPIO:
-    // otherwise the interrupt might fire while it still contains None,
-    // and as-written (with `unwrap()`), it would panic.
+    // Будьте осторожны, включайте прерывание только после установки MY_GPIO:
+    // иначе прерывание может возникнуть, когда мьютекс ещё содержит None,
+    // и как написано (через `unwrap()`) он вызовет панику.
     set_timer_1hz();
     let mut last_state = false;
     loop {
-        // We'll now read state as a digital input, via the mutex
+        // А сейчас прочтем состояние цифрового входа используя мьютекс
         let state = interrupt::free(|cs| {
             let gpioa = MY_GPIO.borrow(cs).borrow();
             gpioa.as_ref().unwrap().idr.read().idr0().bit_is_set()
         });
 
         if state && !last_state {
-            // Set PA1 high if we've seen a rising edge on PA0.
+            // Установим PA1 в высокое состояние, когда увидим передний фронт на PA0.
             interrupt::free(|cs| {
                 let gpioa = MY_GPIO.borrow(cs).borrow();
                 gpioa.as_ref().unwrap().odr.modify(|_, w| w.odr1().set_bit());
@@ -459,40 +464,39 @@ fn main() -> ! {
 
 #[interrupt]
 fn timer() {
-    // This time in the interrupt we'll just clear PA0.
+    // В это же время прерывание будет просто очищать PA0.
     interrupt::free(|cs| {
-        // We can use `unwrap()` because we know the interrupt wasn't enabled
-        // until after MY_GPIO was set; otherwise we should handle the potential
-        // for a None value.
+        // Мы можем использовать `unwrap()`, потому что знаем, что прерывание не было включено
+        // пока не установили MY_GPIO; иначе нам нужно было бы обрабатывать возможное
+        // None значение.
         let gpioa = MY_GPIO.borrow(cs).borrow();
         gpioa.as_ref().unwrap().odr.modify(|_, w| w.odr1().clear_bit());
     });
 }
 ```
 
-That's quite a lot to take in, so let's break down the important lines.
+Тут довольно много, поэтому давайте разберемся с важными строками.
 
 ```rust,ignore
 static MY_GPIO: Mutex<RefCell<Option<stm32f405::GPIOA>>> =
     Mutex::new(RefCell::new(None));
 ```
 
-Our shared variable is now a `Mutex` around a `RefCell` which contains an
-`Option`. The `Mutex` ensures we only have access during a critical section,
-and therefore makes the variable Sync, even though a plain `RefCell` would not
-be Sync. The `RefCell` gives us interior mutability with references, which
-we'll need to use our `GPIOA`. The `Option` lets us initialise this variable
-to something empty, and only later actually move the variable in. We cannot
-access the peripheral singleton statically, only at runtime, so this is
-required.
+Наши разделяемая переменная теперь `Mutex`, содержащий `RefCell`, содержащий
+`Option`. `Mutex` проверяет, что мы имеем доступ только в критической секции,
+и превращающий переменную в Sync, даже когда обычный `RefCell` не будет Sync.
+`RefCell` даёт нам interior mutability с ссылками, которая нам будет нужна
+для использования `GPIOA`. `Option` позволяет нам инициализировать переменную
+чем-то пустым, и уже после действительно поместить туда переменную.
+Мы не можем получить доступ к одиночке периферии статически, только во время выполнения,
+поэтому это необходимо.
 
 ```rust,ignore
 interrupt::free(|cs| MY_GPIO.borrow(cs).replace(Some(dp.GPIOA)));
 ```
 
-Inside a critical section we can call `borrow()` on the mutex, which gives us
-a reference to the `RefCell`. We then call `replace()` to move our new value
-into the `RefCell`.
+Внутри критической секции мы можем вызвать `borrow()` на мьютексе, который отдаст нам
+ссылку на `RefCell`. Затем мы вызываем `replace()`, чтобы поместить новое значение в `RefCell`.
 
 ```rust,ignore
 interrupt::free(|cs| {
@@ -501,18 +505,19 @@ interrupt::free(|cs| {
 });
 ```
 
-Finally we use `MY_GPIO` in a safe and concurrent fashion. The critical section
-prevents the interrupt firing as usual, and lets us borrow the mutex.  The
-`RefCell` then gives us an `&Option<GPIOA>`, and tracks how long it remains
-borrowed - once that reference goes out of scope, the `RefCell` will be updated
-to indicate it is no longer borrowed.
+Наконец-то мы используем `MY_GPIO` в безопасном конкурентном стиле. Критическая секция
+предотвращает появление прерывания и позволяет нам заимствовать мьютекс.
+Затем `RefCell` отдает нам `&Option<GPIOA>`, и следит, как долго он остается
+заимствован - как только ссылка выходит из области видимости, `RefCell` обновится,
+чтобы показать, что он больше не заимствован.
 
-Since we can't move the `GPIOA` out of the `&Option`, we need to convert it to
-an `&Option<&GPIOA>` with `as_ref()`, which we can finally `unwrap()` to obtain
-the `&GPIOA` which lets us modify the peripheral.
+Так как мы не можем перемещать `GPIOA` из `&Option`, нам нужно конвертировать его в 
+`&Option<&GPIOA>` с помощью `as_ref()`, который мы можем `unwrap()`, чтобы получить
+`&GPIOA`, который позволит нам модиицировать периферию.
 
-If we need a mutable references to shared resources, then `borrow_mut` and `deref_mut`
-should be used instead. The following code shows an example using the TIM2 timer.
+Если нам нужны изменяемые ссылки на разделяемый ресурс, тогда вместо них
+нужно использовать `borrow_mut` и `deref_mut`. Следующий код показывает
+пример с использованием таймера TIM2.
 
 ```rust,ignore
 use core::cell::RefCell;
@@ -529,9 +534,9 @@ fn main() -> ! {
     let mut cp = cm::Peripherals::take().unwrap();
     let dp = stm32f405::Peripherals::take().unwrap();
 
-    // Some sort of timer configuration function.
-    // Assume it configures the TIM2 timer, its NVIC interrupt,
-    // and finally starts the timer.
+    // Какая-то функция настройки таймера.
+    // Предположим она настраивает таймер TIM2, его NVIC прерывание,
+    // и в конце запускает таймер.
     let tim = configure_timer_interrupt(&mut cp, dp);
 
     interrupt::free(|cs| {
@@ -554,72 +559,77 @@ fn timer() {
 
 ```
 
-> **NOTE**
+> **ПРИМЕЧАНИЕ**
 >
-> At the moment, the `cortex-m` crate hides const versions of some functions
-> (including `Mutex::new()`) behind the `const-fn` feature. So you need to add
-> the `const-fn` feature as a dependency for cortex-m in the Cargo.toml to make
-> the above examples work:
+> В настоящий момент, крейт `cortex-m` прячет константные версии некоторых функций
+> (включая `Mutex::new()`) за опцией `const-fn`. Поэтоиу Вы должны включить опцию
+> `const-fn` для зависимости cortex-m в Cargo.toml, чтобы заставить примеры
+> выше работать:
 >
 > ``` toml
 > [dependencies.cortex-m]
 > version="0.6.0"
 > features=["const-fn"]
 > ```
-> Meanwhile, `const-fn` has been working on stable Rust for some time now.
-> So this additional switch in Cargo.toml will not be needed as soon as 
-> it is enabled in `cortex-m` by default.
+> `const-fn` уже работает на стабильно Rust какое-то время.
+> Поэтому дополнительные переключения в Cargo.toml будут не нужны, как только
+> оно будет в `cortex-m` по умолчанию.
 >
 
-Фух! This is safe, but it is also a little unwieldy. Is there anything else
-we can do?
+Фух! Всё безопасно, но также и немного громоздко. Есть ли что-то другое,
+что мы можем использовать?
 
 ## RTFM
 
-One alternative is the [RTFM framework], short for Real Time For the Masses. It
-enforces static priorities and tracks accesses to `static mut` variables
-("resources") to statically ensure that shared resources are always accessed
-safely, without requiring the overhead of always entering critical sections and
-using reference counting (as in `RefCell`). This has a number of advantages such
-as guaranteeing no deadlocks and giving extremely low time and memory overhead.
+Одной из альтернатив является [фреймворк RTFM][RTFM], сокращение от Real Time For the Masses.
+Он проверяет статические приоритеты и отслеживает доступ к `static mut` переменным
+("ресурсам"), чтобы статически убедиться, что доступ к разделяемым ресурсам всегда безопасен,
+не требуя требуя накладных расходов на регулярный вход в критические секции и
+использование счетчика ссылок (как с `RefCell`). Он также имеет рад преимуществ,
+такие как гарантированное отсутствие deadlock'ов и минимальные накладные расходы
+как по времени, так и по памяти.
 
-[RTFM framework]: https://github.com/japaric/cortex-m-rtfm
+[RTFM]: https://github.com/japaric/cortex-m-rtfm
 
-The framework also includes other features like message passing, which reduces
-the need for explicit http://baibako.tv/index.php?page=1shared state, and the ability to schedule tasks to run at
-a given time, which can be used to implement periodic tasks. Check out [the
-documentation] for more information!
+Фреймворк также включает и другую функциональность, такую как передача сообщений,
+которая снижает необходимость в явных разделяемых переменных состояний,
+и возможность планирования задач на запуск в назначенное время,
+которые можно использовать, чтобы реализовывать периодические задачи. Ознакомьтесь с
+[документацией][the documentation] для дополнительной информации!
 
 [the documentation]: https://japaric.github.io/cortex-m-rtfm/book/ru/
 
-## Real Time Operating Systems
+## Операционные системы реального времени
 
-Another common model for embedded concurrency is the real-time operating system
-(RTOS). While currently less well explored in Rust, they are widely used in
-traditional embedded development. Open source examples include [FreeRTOS] and
-[ChibiOS]. These RTOSs provide support for running multiple application threads
-which the CPU swaps between, either when the threads yield control (called
-cooperative multitasking) or based on a regular timer or interrupts (preemptive
-multitasking). The RTOS typically provide mutexes and other synchronisation
-primitives, and often interoperate with hardware features such as DMA engines.
+Другая широко используемая модель конкурентности в эмбеддед - операционные системы
+реального времени (RTOS). Несмотря на то, что сейчас они не очень хорошо изучены в Rust,
+они широко используются в традиционной разработке встраиваеміх систем.
+Есть и примеры с открытым исходным кодом, такие как [FreeRTOS] и
+[ChibiOS]. Эти RTOS предоставляют поддержку запуска множества потоков приложений,
+которые делят ЦПУ между собой, либо когда поток отдает контроль (называемая
+кооперативной многозадачностью) или основанные на обычном таймере и прерываниях
+(вытесняющая многозадачность). RTOS обычно предоставляют мьютексы и другие примитивы синхронизации,
+и часто взаимодействуют с аппаратными функциями, такими как DMA.
 
 [FreeRTOS]: https://freertos.org/
 [ChibiOS]: http://chibios.org/
 
-At the time of writing there are not many Rust RTOS examples to point to,
-but it's an interesting area so watch this space!
+В момент написания книги, было немного примеров Rust RTOS, чтобы на них указать,
+но это интересная область so watch this space!
 
-## Multiple Cores
+## Многоядерные системы
 
-It is becoming more common to have two or more cores in embedded processors,
-which adds an extra layer of complexity to concurrency. All the examples using
-a critical section (including the `cortex_m::interrupt::Mutex`) assume the only
-other execution thread is the interrupt thread, but on a multi-core system
-that's no longer true. Instead, we'll need synchronisation primitives designed
-for multiple cores (also called SMP, for symmetric multi-processing).
+Становится все более распространенным иметь два или более ядер во встраиваемых процессорах
+что добавляет дополнительный уровень сложности для конкурентности.
+Во всех примерах, использующих критическую секцию (включая `cortex_m::interrupt::Mutex`),
+предполагается, что единственным другим потоком выполнения является поток прерываний,
+но в многоядерной системе это уже не так.
+Вместо этого нам понадобятся примитивы синхронизации,
+разработанные для нескольких ядер (также называемые SMP, для симметричной многопроцессорной обработки).
 
-These typically use the atomic instructions we saw earlier, since the
-processing system will ensure that atomicity is maintained over all cores.
+Они обычно используют атомарные инструкции, с которыми мы встречались ранее,
+поскольку система обработки будет проверять, что атомарность обеспечивается
+во всех ядрах.
 
-Covering these topics in detail is currently beyond the scope of this book,
-but the general patterns are the same as for the single-core case.
+Подробное освещение этих тем в настоящее время выходит за рамки этой книги,
+но общие закономерности такие же, как и в случае с одноядерным процессором.
